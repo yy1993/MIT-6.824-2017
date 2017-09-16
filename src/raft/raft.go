@@ -17,13 +17,14 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "labrpc"
+import (
+	"labrpc"
+	"sync"
+	"time"
+)
 
 // import "bytes"
 // import "encoding/gob"
-
-
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -37,19 +38,46 @@ type ApplyMsg struct {
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
 
+// For heartbeat
+// TODO a handler for reseting election timeout (not always same)
+// leader send less than 10 heartbeat per second
+// TODO caculate timeout that complete multiple rounds election in 5 seconds
+// range: 300ms in the paper < timeout < election completetion in 5 seconds
+// API Referrence:  create a goroutine with a loop to call time.Sleep()
+// and rand
+// and DPrintf in util.go for debugging management for different problem
+// print statements after sending and receiving a message to file: go test -run 2A > out
+// TODO pass in both go test and go test -race
+
 //
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
-	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
-	me        int                 // this peer's index into peers[]
-
+	mu              sync.Mutex          // Lock to protect shared access to this peer's state
+	peers           []*labrpc.ClientEnd // RPC end points of all peers
+	persister       *Persister          // Object to hold this peer's persisted state
+	me              int                 // this peer's index into peers[]
+	conf            *Config
+	lastContact     time.Time
+	lastContactLock sync.RWMutex
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	// Persistent on all servers
+	// (2A)
+	raftState
+
+	// (2B)
+	//log []*LogEntry
+
+	// Volatile on all servers
+	//commitIndex int
+	//lastApplied int
+
+	// Volatile on leader
+	//nextIndex []int
+	//matchIndex []int
 }
 
 // return currentTerm and whether this server
@@ -58,7 +86,9 @@ func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
-	// Your code here (2A).
+	// Your code here (2A)
+	term = int(rf.getCurrentTerm())
+	isleader = (rf.getState() == Leader)
 	return term, isleader
 }
 
@@ -93,15 +123,19 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
-
-
-
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	// (2A)
+	Term        uint64
+	CandidateId int32
+
+	// (2B)
+	//lastLogIndex int
+	//lastLogTerm int
 }
 
 //
@@ -110,6 +144,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        uint64
+	VoteGranted bool
 }
 
 //
@@ -117,6 +153,48 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	// (2A)
+	// All Servers
+	reply.Term = rf.getCurrentTerm()
+
+	if args.Term < rf.getCurrentTerm() {
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.Term > rf.getCurrentTerm() || rf.getState() != Follower {
+		// Ensure transition to follower
+		rf.setState(Follower)
+		rf.setCurrentTerm(args.Term)
+		rf.setVotedFor(-1)
+	}
+
+	if rf.getVotedFor() == -1 || rf.getVotedFor() == args.CandidateId {
+		reply.VoteGranted = true
+		rf.setVotedFor(args.CandidateId)
+	} else {
+		reply.VoteGranted = false
+	}
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+
+	reply.Term = rf.getCurrentTerm()
+	// Ignore an older term
+	if args.Term < rf.getCurrentTerm() {
+		return
+	}
+
+	// Increase the term if we see a newer one, also transition to follower
+	// if we ever get an appendEntries call
+	if args.Term > rf.getCurrentTerm() && rf.getState() != Follower {
+		// Ensure transition to follower
+		rf.setState(Follower)
+		rf.setCurrentTerm(args.Term)
+	}
+	if rf.getState() == Follower {
+		rf.setLastContact()
+	}
 }
 
 //
@@ -153,6 +231,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -174,7 +256,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 
-
 	return index, term, isLeader
 }
 
@@ -186,6 +267,120 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+}
+
+type AppendEntriesArgs struct {
+	Term     uint64
+	LeaderId int
+}
+
+type AppendEntriesReply struct {
+	Term uint64
+}
+
+func (rf *Raft) heartBeat(respCh chan *AppendEntriesReply) {
+	// Construct the request
+	//lastIdx, lastTerm := r.getLastEntry()
+	req := &AppendEntriesArgs{
+		Term:     rf.getCurrentTerm(),
+		LeaderId: rf.me,
+		//LastLogIndex: lastIdx,
+		//LastLogTerm:  lastTerm,
+	}
+
+	tellPeer := func(peer int) {
+		rf.goFunc(func() {
+			resp := &AppendEntriesReply{}
+			ok := rf.sendAppendEntries(peer, req, resp)
+			if !ok {
+				//r.logger.Printf("[ERR] raft: Failed to make RequestVote RPC to %v: %v", peer, err)
+				resp.Term = req.Term
+			}
+		})
+	}
+
+	// For each peer, request a vote
+	for peer := range rf.peers {
+		if peer != rf.me {
+			tellPeer(peer)
+		}
+	}
+
+	return
+}
+
+// setCurrentTerm is used to set the current term in a durable manner.
+func (rf *Raft) setCurrentTerm(t uint64) {
+	// Persist to disk first
+	if rf.me == 1 {
+		DPrintf("[View m1's term] term = %d newterm = %d state = %s", rf.getCurrentTerm(), t, rf.getState())
+	}
+	rf.raftState.setCurrentTerm(t)
+}
+
+type voteResult struct {
+	RequestVoteReply
+	voter int
+}
+
+// electSelf is used to send a RequestVote RPC to all peers,
+// and vote for ourself. This has the side affecting of incrementing
+// the current term. The response channel returned is used to wait
+// for all the responses (including a vote for ourself).
+func (rf *Raft) electSelf() <-chan *voteResult {
+	rf.setVotedFor(int32(rf.me))
+	// Create a response channel
+	respCh := make(chan *voteResult, len(rf.peers))
+
+	// Increment the term
+	rf.setCurrentTerm(rf.getCurrentTerm() + 1)
+
+	// Construct the request
+	//lastIdx, lastTerm := r.getLastEntry()
+	req := &RequestVoteArgs{
+		Term:        rf.getCurrentTerm(),
+		CandidateId: int32(rf.me),
+		//LastLogIndex: lastIdx,
+		//LastLogTerm:  lastTerm,
+	}
+
+	// Construct a function to ask for a vote
+	askPeer := func(peer int) {
+		rf.goFunc(func() {
+			resp := &voteResult{voter: peer}
+			ok := rf.sendRequestVote(peer, req, &resp.RequestVoteReply)
+			if !ok {
+				//r.logger.Printf("[ERR] raft: Failed to make RequestVote RPC to %v: %v", peer, err)
+				resp.Term = req.Term
+				resp.VoteGranted = false
+			}
+			respCh <- resp
+		})
+	}
+
+	// For each peer, request a vote
+	for peer := range rf.peers {
+		if peer != rf.me {
+			askPeer(peer)
+		}
+	}
+
+	// Persist a vote for ourselves
+
+	// Include our own vote
+	respCh <- &voteResult{
+		RequestVoteReply: RequestVoteReply{
+			Term:        req.Term,
+			VoteGranted: true,
+		},
+		voter: rf.me,
+	}
+	return respCh
+}
+
+// quorumSize is used to return the quorum size
+func (rf *Raft) quorumSize() int {
+	return (len(rf.peers) / 2) + 1
 }
 
 //
@@ -201,16 +396,143 @@ func (rf *Raft) Kill() {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
-
+	rf := &Raft{
+		peers:     peers,
+		persister: persister,
+		me:        me,
+		conf:      DefaultConfig(),
+	}
 	// Your initialization code here (2A, 2B, 2C).
+	rf.setState(Follower)
+	rf.goFunc(rf.run)
 
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
-
+	//rf.readPersist(persister.ReadRaftState())
 
 	return rf
+}
+
+// run is a long running goroutine that runs the Raft FSM.
+func (rf *Raft) run() {
+	for {
+
+		// Enter into a sub-FSM
+		switch rf.getState() {
+		case Follower:
+			rf.runFollower()
+		case Candidate:
+			rf.runCandidate()
+		case Leader:
+			rf.runLeader()
+		}
+	}
+}
+
+// runFollower runs the FSM for a follower.
+func (rf *Raft) runFollower() {
+	electionTimer := randomTimeout(rf.conf.ElectionTimeout)
+	for rf.getState() == Follower {
+		select {
+
+		case <-electionTimer:
+			// Restart the heartbeat timer
+			electionTimer = randomTimeout(rf.conf.ElectionTimeout)
+
+			// Check if we have had a successful contact
+			lastContact := rf.LastContact()
+			now := time.Now()
+			if now.Sub(lastContact) < rf.conf.ElectionTimeout {
+				continue
+			}
+			DPrintf("[Follower promoted to Candidate] lastContact = %s, now = %s", rf.LastContact(), now)
+			// Heartbeat failed! Transition to the candidate state
+			rf.setState(Candidate)
+			return
+		}
+	}
+}
+
+// runCandidate runs the FSM for a candidate.
+func (rf *Raft) runCandidate() {
+	// Start vote for us, and set a timeout
+	voteCh := rf.electSelf()
+	electionTimer := randomTimeout(rf.conf.ElectionTimeout)
+
+	// Tally the votes, need a simple majority
+	grantedVotes := 0
+	votesNeeded := rf.quorumSize()
+
+	for rf.getState() == Candidate {
+		select {
+		case vote := <-voteCh:
+			// Check if the term is greater than ours, bail
+			if vote.Term > rf.getCurrentTerm() {
+				rf.setState(Follower)
+				rf.setCurrentTerm(vote.Term)
+				return
+			}
+
+			// Check if the vote is granted
+			if vote.VoteGranted {
+				DPrintf("[Gain Granted Vote] me = %d, term = %d, voter = %d", rf.me, rf.getCurrentTerm(), vote.voter)
+				grantedVotes++
+			}
+
+			// Check if we've become the leader
+			if grantedVotes >= votesNeeded {
+				rf.setState(Leader)
+				DPrintf("[This is Leader] me = %d, state = %s", rf.me, rf.getState())
+				return
+			}
+
+		case <-electionTimer:
+			// Election failed! Restart the election. We simply return,
+			// which will kick us back into runCandidate
+			return
+		}
+	}
+}
+
+// runLeader runs the FSM for a leader. Do the setup here and drop into
+// the leaderLoop for the hot loop.
+func (rf *Raft) runLeader() {
+	// Sit in the leader loop until we step down
+	rf.leaderLoop()
+}
+
+// leaderLoop is the hot loop for a leader. It is invoked
+// after all the various leader setup is done.
+func (rf *Raft) leaderLoop() {
+	heartbeatRespCh := make(chan *AppendEntriesReply)
+	heartbeatTimer := time.After(time.Duration(0))
+	DPrintf("[Leader Loop] me = %d, state = %s", rf.me, rf.getState())
+	for rf.getState() == Leader {
+		select {
+		case heartbeatResp := <-heartbeatRespCh:
+			// Check if the term is greater than ours, bail
+			if heartbeatResp.Term > rf.getCurrentTerm() {
+				rf.setState(Follower)
+				rf.setCurrentTerm(heartbeatResp.Term)
+				return
+			}
+		case <-heartbeatTimer:
+			heartbeatTimer = time.After(rf.conf.HeartbeatTimeout)
+			DPrintf("[Leader Sending Heartbeat] term = %d, me = %d, state = %s, time = %s", rf.getCurrentTerm(), rf.me, rf.getState(), time.Now())
+			rf.heartBeat(heartbeatRespCh)
+		}
+	}
+}
+
+func (rf *Raft) LastContact() time.Time {
+	rf.lastContactLock.RLock()
+	last := rf.lastContact
+	rf.lastContactLock.RUnlock()
+	return last
+}
+
+// setLastContact is used to set the last contact time to now
+func (rf *Raft) setLastContact() {
+	rf.lastContactLock.Lock()
+	rf.lastContact = time.Now()
+	rf.lastContactLock.Unlock()
 }

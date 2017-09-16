@@ -1,0 +1,26 @@
+Test (2A): initial election ...
+2017/09/15 22:17:07 [Follower promoted to Candidate] lastContact = 0001-01-01 00:00:00 +0000 UTC, now = 2017-09-15 22:17:07.575269932 -0700 PDT
+2017/09/15 22:17:07 [Follower promoted to Candidate] lastContact = 0001-01-01 00:00:00 +0000 UTC, now = 2017-09-15 22:17:07.656642249 -0700 PDT
+2017/09/15 22:17:07 [Leader Sending Heartbeat] term = 2, me = 1
+2017/09/15 22:17:07 [Leader Sending Heartbeat] term = 2, me = 2
+2017/09/15 22:17:08 [Follower promoted to Candidate] lastContact = 2017-09-15 22:17:07.682995217 -0700 PDT, now = 2017-09-15 22:17:08.448291222 -0700 PDT
+2017/09/15 22:17:08 [Follower promoted to Candidate] lastContact = 2017-09-15 22:17:07.76409969 -0700 PDT, now = 2017-09-15 22:17:08.514648374 -0700 PDT
+2017/09/15 22:17:08 [Leader Sending Heartbeat] term = 4, me = 2
+2017/09/15 22:17:08 [Leader Sending Heartbeat] term = 4, me = 1
+2017/09/15 22:17:09 [Follower promoted to Candidate] lastContact = 2017-09-15 22:17:08.61789855 -0700 PDT, now = 2017-09-15 22:17:09.263658246 -0700 PDT
+2017/09/15 22:17:09 [Leader Sending Heartbeat] term = 5, me = 2
+2017/09/15 22:17:09 [Follower promoted to Candidate] lastContact = 2017-09-15 22:17:09.368391218 -0700 PDT, now = 2017-09-15 22:17:09.897433937 -0700 PDT
+2017/09/15 22:17:10 [Leader Sending Heartbeat] term = 6, me = 0
+warning: term changed even though there were no failures  ... Passed
+Test (2A): election after network failure ...
+2017/09/15 22:17:11 [Follower promoted to Candidate] lastContact = 2017-09-15 22:17:10.004495016 -0700 PDT, now = 2017-09-15 22:17:11.011255674 -0700 PDT
+2017/09/15 22:17:11 [Leader Sending Heartbeat] term = 7, me = 1
+2017/09/15 22:17:11 [Follower promoted to Candidate] lastContact = 0001-01-01 00:00:00 +0000 UTC, now = 2017-09-15 22:17:11.188236755 -0700 PDT
+2017/09/15 22:17:11 [Leader Sending Heartbeat] term = 1, me = 0
+2017/09/15 22:17:11 [Follower promoted to Candidate] lastContact = 2017-09-15 22:17:11.292019858 -0700 PDT, now = 2017-09-15 22:17:11.98823366 -0700 PDT
+2017/09/15 22:17:12 [Leader Sending Heartbeat] term = 2, me = 1
+2017/09/15 22:17:12 [Follower promoted to Candidate] lastContact = 2017-09-15 22:17:12.093039277 -0700 PDT, now = 2017-09-15 22:17:12.705532345 -0700 PDT
+2017/09/15 22:17:14 [Leader Sending Heartbeat] term = 6, me = 2
+  ... Passed
+PASS
+ok  	raft	9.549s
